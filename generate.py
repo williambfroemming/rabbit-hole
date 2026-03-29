@@ -192,7 +192,6 @@ def upload_to_s3(bucket, s3_key, html, topic):
             Key=s3_key,
             Body=html.encode("utf-8"),
             ContentType="text/html",
-            ACL="public-read",
             CacheControl="max-age=86400",
             Metadata={
                 "topic": topic,
