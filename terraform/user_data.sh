@@ -7,7 +7,7 @@ apt-get install -y python3-pip python3-venv git
 
 # Clone repo
 cd /home/ubuntu
-git clone https://github.com/yourusername/rabbit-hole.git rabbit-hole
+git clone https://github.com/williambfroemming/rabbit-hole.git rabbit-hole
 cd rabbit-hole
 
 # Create venv and install deps
@@ -27,10 +27,15 @@ EOF
 # Create logs directory
 mkdir -p logs
 
-# Set up cron job (5:30am Pacific = 12:30pm UTC)
-(crontab -l 2>/dev/null || true; echo "30 12 * * * cd /home/ubuntu/rabbit-hole && source venv/bin/activate && source .env && python3 generate.py >> logs/cron.log 2>&1") | crontab -
+# Set up cron jobs
+(crontab -l 2>/dev/null || true; \
+echo "30 12 * * * cd /home/ubuntu/rabbit-hole && source venv/bin/activate && source .env && python3 generate.py >> logs/cron.log 2>&1"; \
+echo "@reboot cd /home/ubuntu/rabbit-hole && source venv/bin/activate && source .env && nohup python3 bot_listener.py >> logs/bot.log 2>&1 &") | crontab -
+
+# Start bot listener immediately
+cd /home/ubuntu/rabbit-hole && source venv/bin/activate && source .env && nohup python3 bot_listener.py >> logs/bot.log 2>&1 &
 
 # Fix permissions
 chown -R ubuntu:ubuntu /home/ubuntu/rabbit-hole
 
-echo "Rabbit Hole agent setup complete. First run scheduled for 5:30am Pacific."
+echo "Rabbit Hole agent setup complete. First run scheduled for 5:30am Pacific. Bot listener running."
