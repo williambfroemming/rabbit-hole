@@ -8,7 +8,9 @@ import sys
 import json
 import time
 import requests
+import boto3
 from pathlib import Path
+from botocore.exceptions import ClientError, BotoCoreError
 
 
 OFFSET_FILE = "bot_offset.txt"
@@ -44,21 +46,50 @@ def save_offset(offset):
 
 
 def load_queue():
-    """Load queue.json."""
+    """Load queue.json from S3 (with fallback to local file on first run)."""
+    bucket = os.environ.get("S3_BUCKET")
+    if not bucket:
+        log("ERROR: S3_BUCKET not set")
+        return {"queue": [], "topics_done": []}
+
+    s3 = boto3.client("s3")
+
     try:
-        with open(QUEUE_FILE, "r") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
+        obj = s3.get_object(Bucket=bucket, Key="data/queue.json")
+        return json.loads(obj["Body"].read())
+    except s3.exceptions.NoSuchKey:
+        # First run — fallback to local file and migrate to S3
+        try:
+            with open(QUEUE_FILE, "r") as f:
+                data = json.load(f)
+            # Write to S3 immediately
+            s3.put_object(Bucket=bucket, Key="data/queue.json",
+                         Body=json.dumps(data, indent=2),
+                         ContentType="application/json")
+            log("✓ Migrated queue.json to S3")
+            return data
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {"queue": [], "topics_done": []}
+    except (ClientError, BotoCoreError) as e:
+        log(f"ERROR: S3 access failed: {e}")
         return {"queue": [], "topics_done": []}
 
 
 def save_queue(data):
-    """Save queue.json."""
+    """Save queue.json to S3."""
+    bucket = os.environ.get("S3_BUCKET")
+    if not bucket:
+        log("ERROR: S3_BUCKET not set")
+        return
+
+    s3 = boto3.client("s3")
+
     try:
-        with open(QUEUE_FILE, "w") as f:
-            json.dump(data, f, indent=2)
-    except IOError as e:
-        log(f"ERROR: Could not write queue.json: {e}")
+        s3.put_object(Bucket=bucket, Key="data/queue.json",
+                     Body=json.dumps(data, indent=2),
+                     ContentType="application/json")
+    except (ClientError, BotoCoreError) as e:
+        log(f"ERROR: Could not write queue.json to S3: {e}")
 
 
 def send_telegram(bot_token, chat_id, text):

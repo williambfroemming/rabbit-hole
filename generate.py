@@ -204,46 +204,88 @@ def upload_to_s3(bucket, s3_key, html, topic):
 
 
 def load_queue():
-    """Load queue.json."""
+    """Load queue.json from S3 (with fallback to local file on first run)."""
+    bucket = require_env("S3_BUCKET")
+    s3 = boto3.client("s3")
+
     try:
-        with open("queue.json", "r") as f:
-            data = json.load(f)
+        obj = s3.get_object(Bucket=bucket, Key="data/queue.json")
+        data = json.loads(obj["Body"].read())
         return data.get("queue", []), data.get("topics_done", [])
-    except (FileNotFoundError, json.JSONDecodeError) as e:
-        print(f"ERROR: Could not load queue.json: {e}", file=sys.stderr)
+    except s3.exceptions.NoSuchKey:
+        # First run — fallback to local file and migrate to S3
+        try:
+            with open("queue.json", "r") as f:
+                data = json.load(f)
+            # Write to S3 immediately
+            s3.put_object(Bucket=bucket, Key="data/queue.json",
+                         Body=json.dumps(data, indent=2),
+                         ContentType="application/json")
+            print("✓ Migrated queue.json to S3")
+            return data.get("queue", []), data.get("topics_done", [])
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            print(f"ERROR: Could not load queue.json: {e}", file=sys.stderr)
+            sys.exit(1)
+    except (ClientError, BotoCoreError) as e:
+        print(f"ERROR: S3 access failed: {e}", file=sys.stderr)
         sys.exit(1)
 
 
 def load_topics_done():
-    """Load topics_done.json."""
+    """Load topics_done.json from S3 (with fallback to local file on first run)."""
+    bucket = require_env("S3_BUCKET")
+    s3 = boto3.client("s3")
+
     try:
-        with open("topics_done.json", "r") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return []
-    except json.JSONDecodeError as e:
-        print(f"ERROR: Could not load topics_done.json: {e}", file=sys.stderr)
+        obj = s3.get_object(Bucket=bucket, Key="data/topics_done.json")
+        return json.loads(obj["Body"].read())
+    except s3.exceptions.NoSuchKey:
+        # First run — fallback to local file and migrate to S3
+        try:
+            with open("topics_done.json", "r") as f:
+                data = json.load(f)
+            # Write to S3 immediately
+            s3.put_object(Bucket=bucket, Key="data/topics_done.json",
+                         Body=json.dumps(data, indent=2),
+                         ContentType="application/json")
+            print("✓ Migrated topics_done.json to S3")
+            return data
+        except FileNotFoundError:
+            return []
+        except json.JSONDecodeError as e:
+            print(f"ERROR: Could not load topics_done.json: {e}", file=sys.stderr)
+            sys.exit(1)
+    except (ClientError, BotoCoreError) as e:
+        print(f"ERROR: S3 access failed: {e}", file=sys.stderr)
         sys.exit(1)
 
 
 def save_queue(queue):
-    """Save queue.json."""
+    """Save queue.json to S3."""
+    bucket = require_env("S3_BUCKET")
+    s3 = boto3.client("s3")
     data = {"queue": queue, "topics_done": []}
+
     try:
-        with open("queue.json", "w") as f:
-            json.dump(data, f, indent=2)
-    except IOError as e:
-        print(f"ERROR: Could not save queue.json: {e}", file=sys.stderr)
+        s3.put_object(Bucket=bucket, Key="data/queue.json",
+                     Body=json.dumps(data, indent=2),
+                     ContentType="application/json")
+    except (ClientError, BotoCoreError) as e:
+        print(f"ERROR: Could not save queue.json to S3: {e}", file=sys.stderr)
         sys.exit(1)
 
 
 def save_topics_done(topics_done):
-    """Save topics_done.json."""
+    """Save topics_done.json to S3."""
+    bucket = require_env("S3_BUCKET")
+    s3 = boto3.client("s3")
+
     try:
-        with open("topics_done.json", "w") as f:
-            json.dump(topics_done, f, indent=2)
-    except IOError as e:
-        print(f"ERROR: Could not save topics_done.json: {e}", file=sys.stderr)
+        s3.put_object(Bucket=bucket, Key="data/topics_done.json",
+                     Body=json.dumps(topics_done, indent=2),
+                     ContentType="application/json")
+    except (ClientError, BotoCoreError) as e:
+        print(f"ERROR: Could not save topics_done.json to S3: {e}", file=sys.stderr)
         sys.exit(1)
 
 
