@@ -165,7 +165,7 @@ def generate_html(client, topic, research_summary, sources, url):
     try:
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=6000,
+            max_tokens=10000,
             messages=[{"role": "user", "content": filled}],
         )
     except anthropic.APIError as e:

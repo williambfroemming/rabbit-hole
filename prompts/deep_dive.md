@@ -1,4 +1,4 @@
-You are generating a themed interactive HTML deep dive page for a personal daily briefing.
+You are generating a themed scrollable HTML deep dive page for a personal daily briefing.
 
 Topic: {{TOPIC}}
 Research findings with sources: {{RESEARCH}}
@@ -120,19 +120,21 @@ BODY STRUCTURE:
    - 2-sentence hook below the title — the most surprising thing about this topic
    - Share button in top-right corner: a small icon button that copies window.location.href to clipboard and shows "Copied!" tooltip on click
 
-2. Chapter navigation — pill buttons:
-   - Horizontal scrollable row of pills
-   - Active pill: --theme-accent background, white text
-   - Inactive: --theme-bg-secondary background, --theme-text-secondary text
-   - Chapters: Origin | The Mechanism | The Dark Side | Modern Impact | What's Next | Sources
+2. Chapter navigation — anchor links (no JavaScript):
+   - Sticky horizontal scrollable row of anchor links styled as pill buttons
+   - Links: <a href="#chapter-1">Origin</a> | <a href="#chapter-2">The Mechanism</a> | ... | <a href="#chapter-6">Sources</a>
+   - Normal pill: --theme-bg-secondary background, --theme-text-secondary text
+   - Hover: slightly darker background
+   - Use :target CSS pseudo-selector to highlight the current chapter
 
-3. Chapter content — one visible at a time:
+3. Chapter content — all visible, scrollable:
+   - Each chapter is a full section with id="chapter-{number}"
    - Eyebrow label (small caps, --theme-accent, 11px)
    - Chapter title (24px, --theme-font-display)
    - Subtitle / hook (16px, --theme-text-secondary, italic)
    - Body content: timelines, stat cards, surprise callouts, prose — all themed
    - Every factual claim has an inline superscript citation: <sup><a href="SOURCE_URL" target="_blank" style="color:var(--theme-accent)">[N]</a></sup>
-   - 2-3 "go deeper" buttons at the bottom of each chapter
+   - 2-3 "explore further" sections at the bottom of each chapter (just text, no buttons)
 
 4. Sources chapter (Chapter 6):
    - Numbered list of every source used
@@ -145,7 +147,6 @@ CONTENT RULES:
 - Never state a fact without a source citation
 - If a claim came from multiple sources, cite both
 - Stat cards for numerical facts, timelines for historical sequence, callout boxes for controversies
-- "Go deeper" buttons use sendPrompt() to kick off a follow-up conversation
 
 DESIGN RULES:
 - All colors from theme variables — never hardcode hex values in the component CSS
@@ -156,29 +157,11 @@ DESIGN RULES:
 - Surprise callout boxes: left border 3px solid --theme-accent, background --theme-accent-muted
 - Timeline dots colored --theme-accent
 - Stat card numbers in --theme-accent
-- Active chapter pill in --theme-accent
+- Anchor nav styling: use :target pseudo-selector for subtle highlighting
 
 INTERACTIVITY:
 - Chapter sections use id="chapter-{number}" (e.g., id="chapter-1", id="chapter-6")
-- Nav pills use data-chapter="{number}" attribute and class="nav-pill"
-- Include this JavaScript before </body>:
-```javascript
-document.querySelectorAll('.nav-pill').forEach(pill => {
-  pill.addEventListener('click', (e) => {
-    e.preventDefault();
-    const chapter = pill.dataset.chapter;
-    document.querySelectorAll('[id^="chapter-"]').forEach(sec => sec.style.display = 'none');
-    document.getElementById(`chapter-${chapter}`).style.display = 'block';
-    document.querySelectorAll('.nav-pill').forEach(p => p.style.background = 'var(--theme-bg-secondary)');
-    document.querySelectorAll('.nav-pill').forEach(p => p.style.color = 'var(--theme-text-secondary)');
-    pill.style.background = 'var(--theme-accent)';
-    pill.style.color = 'white';
-  });
-});
-document.getElementById('chapter-1').style.display = 'block';
-document.querySelectorAll('[id^="chapter-"]').forEach(sec => sec.style.display = 'none');
-document.querySelector('[data-chapter="1"]').style.background = 'var(--theme-accent)';
-document.querySelector('[data-chapter="1"]').style.color = 'white';
-```
+- Nav links are plain <a href="#chapter-N">Chapter Name</a> — no JavaScript needed
+- Share button uses: onclick="navigator.clipboard.writeText(window.location.href); this.textContent='Copied!'; setTimeout(() => this.textContent='Share', 1500);"
 
 OUTPUT: Return only the complete HTML. No explanation, no markdown fences, no commentary.
