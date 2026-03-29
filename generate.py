@@ -264,7 +264,7 @@ def save_queue(queue):
     """Save queue.json to S3."""
     bucket = require_env("S3_BUCKET")
     s3 = boto3.client("s3")
-    data = {"queue": queue, "topics_done": []}
+    data = {"queue": queue}
 
     try:
         s3.put_object(Bucket=bucket, Key="data/queue.json",
