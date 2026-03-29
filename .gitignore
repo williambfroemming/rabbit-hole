@@ -22,4 +22,7 @@ logs/
 .idea/
 *.iml
 
+# Local tracking
+TODO.md
+
 # Terraform (see terraform/.gitignore)
