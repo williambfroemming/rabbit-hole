@@ -1,0 +1,12 @@
+# Copy this to terraform.tfvars and fill in your values
+
+aws_region           = "us-east-1"
+instance_type        = "t3.micro"
+key_pair_name        = "your-key-pair-name"
+ssh_access_cidr      = "YOUR_IP/32"  # e.g., "203.0.113.42/32" - get from https://www.whatismyip.com/
+
+s3_bucket_name       = "rabbit-hole-briefings-yourname"  # Must be globally unique
+
+anthropic_api_key    = "sk-ant-..."
+telegram_bot_token   = "123456:ABCdEf..."
+telegram_chat_id     = "123456789"
