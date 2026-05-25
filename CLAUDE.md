@@ -1,64 +1,54 @@
-# Rabbit Hole Agent
+# AI Weekly Scan
 
 ## Purpose
-Generate daily interactive deep dives on interesting topics. Research thoroughly, surface surprising facts, produce polished themed HTML, publish to S3 as a shareable URL, deliver to Telegram.
+Generate a weekly digest of the AI ecosystem — model releases, research, open source, risks, policy, benchmarks, community pulse, and developer trends. Publishes to S3/CloudFront as a shareable URL, delivers a 3-bullet summary to Telegram.
 
-## Workflow
-1. Read queue.json — take the first topic. If empty, generate a surprising one that hasn't been done before.
-2. Run 6-8 web searches from meaningfully different angles on the topic.
-3. Collect and store all source URLs and publication names from search results.
-4. Classify the topic into a theme family (see prompts/deep_dive.md).
-5. Use prompts/deep_dive.md to generate the themed interactive HTML page with sources embedded.
-6. Save to output/{slug}.html and upload to S3 with correct headers.
-7. Send Telegram message with teaser + public S3 URL.
-8. Move topic from queue.json to topics_done.json with metadata.
-
-## Quality bar
-- Must include at least 3 genuinely surprising facts with citations
-- Every factual claim must link to a real source URL
-- Visual design must reflect the topic's character — not a generic template
-- Interactive — clickable chapters, not a wall of text
-- Mobile-friendly (this is read on a phone)
-- Fully shareable — OG tags, clean URL, share button
-
-## Never
-- Invent, assume, or state facts without a source URL to back them up
-- Recycle topics already in topics_done.json
-- Generate the HTML page without completing web research first
-- Send to Telegram if the S3 upload failed
-- Use hardcoded colors — always use theme CSS variables
-
-## Environment variables required
-- ANTHROPIC_API_KEY
-- S3_BUCKET
-- CLOUDFRONT_BASE
-- TELEGRAM_BOT_TOKEN
-- TELEGRAM_CHAT_ID
-- AWS credentials via standard boto3 chain (IAM role on EC2 or local AWS profile)
+## How It Works
+1. 10 parallel Claude Sonnet agents each research one topic area (2 web searches each)
+2. All source URLs are HTTP-validated — dead or wrong URLs dropped
+3. An editorial review agent fact-checks specific claims (GitHub repos, model versions, benchmark scores) using up to 6 targeted verification searches — removes anything it can't confirm
+4. Claude generates the full HTML digest from `prompts/ai_weekly_scan.md`
+5. HTML uploaded to S3, history updated for week-over-week deduplication
+6. Telegram notification sent with 3-bullet summary + link
 
 ## Running
 ```bash
 # Install dependencies
 pip install -r requirements.txt
 
-# Dry run (test HTML generation, no S3 or Telegram)
-python generate.py --dry-run --topic "Your Topic"
+# Dry run (research + HTML locally, no S3 or Telegram)
+python generate_weekly.py --dry-run
 
 # Live run
-python generate.py
-
-# Override topic (for testing)
-python generate.py --topic "Your Topic"
+python generate_weekly.py
 ```
 
-## Scheduled (EC2)
-```
-30 12 * * * cd ~/rabbit-hole && source venv/bin/activate && source .env && python3 generate.py >> logs/cron.log 2>&1
-```
+## Scheduled
+Runs every Monday at 9 AM UTC via GitHub Actions (`.github/workflows/ai-weekly-scan.yml`).
+Manual trigger: Actions tab → AI Weekly Scan → Run workflow.
 
-## Infrastructure Notes
-- **Always use Ubuntu 22.04 (jammy) on EC2**, not Amazon Linux 2
-  - Amazon Linux 2 ships with Python 3.7 which is incompatible with modern dependencies
-  - Ubuntu 22.04 has Python 3.10 out of the box
-- Terraform deploys everything: EC2, S3, CloudFront, IAM roles, security groups, cron jobs
-- See `terraform/README.md` for setup instructions
+## Environment Variables
+Set as GitHub Actions secrets:
+- `ANTHROPIC_API_KEY`
+- `S3_BUCKET`
+- `CLOUDFRONT_BASE`
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_CHAT_ID`
+- `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` + `AWS_DEFAULT_REGION`
+
+For local dry runs, set `ANTHROPIC_API_KEY` only.
+
+## Output
+- HTML: `https://d1m43j2of227l.cloudfront.net/weekly/YYYY-MM-DD-ai-weekly-scan.html`
+- S3: `s3://rabbit-hole-briefings-bfroemming/weekly/`
+- History (dedup): `s3://rabbit-hole-briefings-bfroemming/weekly/history.json`
+
+## Infrastructure
+- S3 + CloudFront managed by `terraform/` — still active, do not destroy
+- EC2 instance (`i-0117df9d3b176b747`) — no longer used, can be decommissioned
+- GitHub Actions replaced EC2 cron
+
+## Never
+- Include claims without a verifiable source URL
+- Skip the editorial review step
+- Send Telegram if S3 upload failed
