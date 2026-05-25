@@ -391,7 +391,7 @@ def upload_html(s3_client, bucket, s3_key, html, week_range):
         Body=html.encode("utf-8"),
         ContentType="text/html; charset=utf-8",
         CacheControl="public, max-age=86400",
-        Metadata={"week": week_range, "generated": date.today().isoformat()},
+        Metadata={"week": week_range.replace("–", "-"), "generated": date.today().isoformat()},
     )
 
 
