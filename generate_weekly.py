@@ -214,7 +214,7 @@ def research_one_topic(client, topic_area, week_range, dedup_context):
     for _ in range(MAX_TOPIC_TURNS):
         try:
             response = client.messages.create(
-                model="claude-haiku-4-5-20251001",
+                model="claude-sonnet-4-6",
                 max_tokens=2000,
                 system=system,
                 tools=[TOPIC_SEARCH_TOOL],
@@ -290,6 +290,28 @@ def run_research(client, week_range, recent_coverage_text):
     research_summary = "\n\n---\n\n".join(sections)
     print(f"Research complete: {len(all_sources)} sources across {len(topic_results)}/{len(TOPIC_AREAS)} topics")
     return research_summary, all_sources
+
+
+def validate_urls(sources):
+    """HTTP-check every source URL. Drop anything that returns 4xx or times out.
+    Catches wrong GitHub orgs, dead links, and hallucinated URLs before they reach the HTML.
+    """
+    import requests as req
+
+    valid = []
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; rabbit-hole-bot/1.0)"}
+    for source in sources:
+        url = source["url"]
+        try:
+            resp = req.head(url, headers=headers, timeout=6, allow_redirects=True)
+            if resp.status_code < 400:
+                valid.append(source)
+            else:
+                print(f"  DROPPED (HTTP {resp.status_code}): {url}")
+        except Exception:
+            print(f"  DROPPED (unreachable): {url}")
+    print(f"  URL validation: {len(valid)}/{len(sources)} sources passed")
+    return valid
 
 
 def build_sources_block(sources):
@@ -446,6 +468,10 @@ def main():
 
     # Research (parallel topic agents)
     research_summary, sources = run_research(client, week_range, recent_coverage_text)
+
+    # Validate all source URLs — drop 4xx and unreachable links
+    print("Validating source URLs...")
+    sources = validate_urls(sources)
 
     # Compute paths
     filename = f"{monday.isoformat()}-ai-weekly-scan.html"
