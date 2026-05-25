@@ -24,7 +24,8 @@ WEB_SEARCH_TOOL = {
     "max_uses": 20,
 }
 
-MAX_RESEARCH_TURNS = 28
+MAX_RESEARCH_TURNS = 30
+MAX_SEARCHES = 18  # hard cap on total web searches across all turns
 HISTORY_S3_KEY = "weekly/history.json"
 HISTORY_MAX_WEEKS = 4  # keep rolling 4-week window
 
@@ -65,8 +66,8 @@ If there is a significant new development on one of these stories, include it wi
 """
 
     return f"""You are an AI industry analyst conducting a comprehensive weekly scan of the AI ecosystem.
-You MUST conduct at least 15 web searches covering each of the following topic areas before writing your summary.
-Run searches in a diverse order — do not cluster all searches on one topic.
+Conduct exactly 15–18 web searches total (no more), covering each of the following topic areas, then write your summary.
+Run searches in a diverse order — do not cluster all searches on one topic. Stop searching after 18 searches maximum.
 
 REQUIRED SEARCH AREAS (run 1–2 searches per area):
 1. Major AI lab model releases this week (OpenAI, Anthropic, Google DeepMind, Meta, Mistral)
@@ -142,6 +143,10 @@ def run_research(client, week_range, recent_coverage_text):
                             )
 
         if response.stop_reason == "end_turn":
+            break
+
+        if search_count >= MAX_SEARCHES:
+            print(f"  Search cap ({MAX_SEARCHES}) reached — stopping research loop")
             break
 
         if response.stop_reason == "tool_use":
