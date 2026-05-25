@@ -56,8 +56,8 @@ TOPIC_AREAS = [
         "name": "Open Source",
         "section": "open-source",
         "queries": [
-            "GitHub trending AI ML repositories stars {week}",
-            "HuggingFace new model releases downloads {week}",
+            "site:github.com AI ML trending repository stars 2026",
+            "site:huggingface.co new model release downloads {week}",
         ],
     },
     {
@@ -194,6 +194,12 @@ def research_one_topic(client, topic_area, week_range, dedup_context):
         f"- For each: what happened, why it matters, specific details "
         f"(numbers, model names, benchmark scores, star counts)\n"
         f"- Source attribution for every claim{dedup_note}\n\n"
+        f"LINKING RULES — follow exactly:\n"
+        f"- For GitHub projects: always link to github.com/owner/repo directly, never to a news article or HN thread about it\n"
+        f"- For HuggingFace models: always link to huggingface.co/org/model-name directly\n"
+        f"- For arXiv papers: always link to arxiv.org/abs/XXXX.XXXXX directly\n"
+        f"- For company announcements: link to the official blog post or press release, not third-party coverage\n"
+        f"- If you cannot find the primary source URL, do not include the item\n\n"
         f"Be specific and factual. No hype language."
     )
 
