@@ -96,6 +96,23 @@ def require_env(name, allow_missing=False):
     return val
 
 
+def _strip_tool_results(content):
+    """Return content blocks with web_search_tool_result replaced by a tiny placeholder.
+
+    This prevents the message history from growing unbounded — each search result
+    can be 2-5k tokens, so keeping them all causes context overflow after ~40 searches.
+    Claude still sees its own tool_use blocks (so it knows what it searched for), but
+    the bulky result payloads are dropped after we've already extracted what we need.
+    """
+    stripped = []
+    for block in content:
+        if hasattr(block, "type") and block.type == "web_search_tool_result":
+            stripped.append({"type": "web_search_tool_result", "tool_use_id": block.tool_use_id, "content": "[results processed]"})
+        else:
+            stripped.append(block)
+    return stripped
+
+
 def run_research(client, week_range, recent_coverage_text):
     """Run agentic web search loop. Returns (research_summary, sources)."""
     print(f"Starting research for: {week_range}")
@@ -105,7 +122,7 @@ def run_research(client, week_range, recent_coverage_text):
         {
             "role": "user",
             "content": f"Conduct a comprehensive AI weekly scan for the week of {week_range}. "
-                       f"Research all required topic areas with at least 15 searches total.",
+                       f"Research all required topic areas with {MAX_SEARCHES} searches total, then write your summary.",
         }
     ]
 
@@ -150,7 +167,9 @@ def run_research(client, week_range, recent_coverage_text):
             break
 
         if response.stop_reason == "tool_use":
-            messages.append({"role": "assistant", "content": response.content})
+            # Strip bulky search result payloads before appending to history
+            # to prevent context window overflow on long research sessions.
+            messages.append({"role": "assistant", "content": _strip_tool_results(response.content)})
 
     research_summary = "\n\n".join(all_text_blocks)
     print(f"Research complete: {search_count} searches, {len(sources)} sources")
