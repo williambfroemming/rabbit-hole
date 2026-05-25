@@ -474,8 +474,11 @@ def main():
     except Exception as e:
         print(f"WARNING: Could not update history: {e}", file=sys.stderr)
 
-    # Send Telegram
-    send_weekly_briefing(week_range, research_summary, sources, url)
+    # Send Telegram (non-fatal — digest is already on S3)
+    try:
+        send_weekly_briefing(week_range, research_summary, sources, url)
+    except SystemExit:
+        print("WARNING: Telegram send failed — digest is live on S3 but no notification sent.", file=sys.stderr)
 
 
 if __name__ == "__main__":
