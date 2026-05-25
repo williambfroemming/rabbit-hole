@@ -2,13 +2,19 @@
 """
 AI Weekly Scan: research the AI ecosystem, generate a digest HTML, upload to S3, send Telegram.
 Runs weekly (Monday mornings via GitHub Actions).
+
+Research architecture: map-reduce with parallel topic agents.
+10 Claude instances run concurrently, each focused on one topic area (2 searches, small context).
+Results are combined into a single research summary for HTML generation.
+This avoids context window overflow entirely — each agent never exceeds ~20k tokens.
 """
 import os
 import sys
 import json
 import re
 import argparse
-from datetime import datetime, date, timedelta
+import concurrent.futures
+from datetime import date, timedelta
 
 import anthropic
 import boto3
@@ -17,17 +23,100 @@ from botocore.exceptions import BotoCoreError, ClientError
 from telegram import send_weekly_briefing
 
 
-# Configuration
-WEB_SEARCH_TOOL = {
+HISTORY_S3_KEY = "weekly/history.json"
+HISTORY_MAX_WEEKS = 4
+
+# Each topic gets its own isolated Claude call with this search tool (2 searches max)
+TOPIC_SEARCH_TOOL = {
     "type": "web_search_20250305",
     "name": "web_search",
-    "max_uses": 20,
+    "max_uses": 2,
 }
+MAX_TOPIC_TURNS = 6  # safety cap per topic agent
 
-MAX_RESEARCH_TURNS = 30
-MAX_SEARCHES = 18  # hard cap on total web searches across all turns
-HISTORY_S3_KEY = "weekly/history.json"
-HISTORY_MAX_WEEKS = 4  # keep rolling 4-week window
+# One entry per digest section — each becomes a parallel research agent
+TOPIC_AREAS = [
+    {
+        "name": "Major AI Lab Releases",
+        "section": "releases",
+        "queries": [
+            "OpenAI Anthropic Google DeepMind new model releases {week}",
+            "Meta Mistral Cohere AI model announcements {week}",
+        ],
+    },
+    {
+        "name": "Research Papers",
+        "section": "research",
+        "queries": [
+            "arXiv trending AI machine learning papers {week}",
+            "papers with code trending AI research breakthrough {week}",
+        ],
+    },
+    {
+        "name": "Open Source",
+        "section": "open-source",
+        "queries": [
+            "GitHub trending AI ML repositories stars {week}",
+            "HuggingFace new model releases downloads {week}",
+        ],
+    },
+    {
+        "name": "How Developers Are Building",
+        "section": "building",
+        "queries": [
+            "AI agents agentic workflows production implementation {week}",
+            "developers using LLMs automation real world patterns 2026",
+        ],
+    },
+    {
+        "name": "Risks and Failures",
+        "section": "risks",
+        "queries": [
+            "AI hallucinations safety incidents production failures {week}",
+            "AI jailbreak exploits vulnerabilities security issues {week}",
+        ],
+    },
+    {
+        "name": "Policy and Regulation",
+        "section": "policy",
+        "queries": [
+            "EU AI Act enforcement AI regulation policy news {week}",
+            "AI copyright lawsuit US China AI policy executive order {week}",
+        ],
+    },
+    {
+        "name": "Benchmarks and Evals",
+        "section": "benchmarks",
+        "queries": [
+            "AI model benchmark results leaderboard comparison {week}",
+            "LLM API pricing changes tokens cost comparison 2026",
+        ],
+    },
+    {
+        "name": "Community Pulse",
+        "section": "community",
+        "queries": [
+            "HackerNews LocalLLaMA AI developer discussions {week}",
+            "Twitter X AI developer community debates frustrations {week}",
+        ],
+    },
+    {
+        "name": "Learning Resources",
+        "section": "learning",
+        "queries": [
+            "AI YouTube tutorials technical deep dives trending {week}",
+            "AI development guides courses new techniques 2026",
+        ],
+    },
+    {
+        "name": "Enterprise Tools",
+        "section": "enterprise",
+        "queries": [
+            "Claude Code Cursor GitHub Copilot new features {week}",
+            "Microsoft Copilot enterprise AI platform updates {week}",
+        ],
+    },
+]
 
 
 def get_week_range():
@@ -35,9 +124,6 @@ def get_week_range():
     today = date.today()
     monday = today - timedelta(days=today.weekday())
     sunday = monday + timedelta(days=6)
-
-    def fmt(d):
-        return d.strftime("%-d %b").lstrip("0")  # "5 May" style
 
     month_mon = monday.strftime("%b")
     month_sun = sunday.strftime("%b")
@@ -52,43 +138,7 @@ def get_week_range():
     return week_range, iso_week, monday
 
 
-def build_research_system_prompt(recent_coverage_text):
-    """Build the research system prompt, injecting recent coverage for deduplication."""
-    dedup_block = ""
-    if recent_coverage_text.strip():
-        dedup_block = f"""
-IMPORTANT — DEDUPLICATION:
-The following stories were already covered in the past 3–4 weeks. Do NOT include them as new items.
-If there is a significant new development on one of these stories, include it with a clear "UPDATE:" prefix.
-
-{recent_coverage_text}
-
-"""
-
-    return f"""You are an AI industry analyst conducting a comprehensive weekly scan of the AI ecosystem.
-Conduct exactly 15–18 web searches total (no more), covering each of the following topic areas, then write your summary.
-Run searches in a diverse order — do not cluster all searches on one topic. Stop searching after 18 searches maximum.
-
-REQUIRED SEARCH AREAS (run 1–2 searches per area):
-1. Major AI lab model releases this week (OpenAI, Anthropic, Google DeepMind, Meta, Mistral)
-2. Trending AI/ML research papers this week (arXiv, Papers With Code, Semantic Scholar)
-3. Trending GitHub AI/ML repositories and HuggingFace model releases this week
-4. How developers are using AI agents and agentic workflows in production
-5. AI safety incidents, production failures, hallucinations with real consequences, new exploits or jailbreaks
-6. AI policy and regulation news (EU AI Act, US executive actions, China AI policy, copyright lawsuits)
-7. New model benchmark results, leaderboard changes, API pricing updates this week
-8. Developer community discussions on HackerNews, r/LocalLLaMA, Twitter/X about AI tools this week
-9. High-quality AI tutorials, YouTube videos, technical deep-dives trending this week
-10. New features in enterprise AI tools: Microsoft Copilot, Claude Code, Cursor, GitHub Copilot, major cloud AI platforms
-{dedup_block}
-After completing ALL searches, write a detailed research summary organized by topic area.
-For each item include: what happened, why it matters, and a source citation.
-Be specific — include model names, benchmark scores, star counts, pricing figures where available.
-Include at least one concrete "try this" suggestion for the week."""
-
-
 def require_env(name, allow_missing=False):
-    """Get environment variable or fail loudly."""
     val = os.environ.get(name)
     if not val and not allow_missing:
         print(f"ERROR: Required environment variable {name} is not set.", file=sys.stderr)
@@ -96,100 +146,147 @@ def require_env(name, allow_missing=False):
     return val
 
 
-def _strip_tool_results(content):
-    """Return content blocks with web_search_tool_result replaced by a tiny placeholder.
+def _extract_publication(url):
+    try:
+        from urllib.parse import urlparse
+        host = urlparse(url).netloc.lower().replace("www.", "")
+        return host.split(".")[0].capitalize()
+    except Exception:
+        return url
 
-    This prevents the message history from growing unbounded — each search result
-    can be 2-5k tokens, so keeping them all causes context overflow after ~40 searches.
-    Claude still sees its own tool_use blocks (so it knows what it searched for), but
-    the bulky result payloads are dropped after we've already extracted what we need.
+
+def _strip_tool_results(content):
+    """Replace web_search_tool_result payloads with a placeholder before storing in history.
+    Keeps the tool_use block (so Claude knows what it searched) but drops the bulky result body.
     """
     stripped = []
     for block in content:
         if hasattr(block, "type") and block.type == "web_search_tool_result":
-            stripped.append({"type": "web_search_tool_result", "tool_use_id": block.tool_use_id, "content": "[results processed]"})
+            stripped.append({
+                "type": "web_search_tool_result",
+                "tool_use_id": block.tool_use_id,
+                "content": "[results extracted]",
+            })
         else:
             stripped.append(block)
     return stripped
 
 
-def run_research(client, week_range, recent_coverage_text):
-    """Run agentic web search loop. Returns (research_summary, sources)."""
-    print(f"Starting research for: {week_range}")
-    system_prompt = build_research_system_prompt(recent_coverage_text)
+def research_one_topic(client, topic_area, week_range, dedup_context):
+    """Single-topic agent: runs 2 searches in its own isolated context, returns a focused summary."""
+    queries_formatted = "\n".join(
+        f"- {q.replace('{week}', week_range)}" for q in topic_area["queries"]
+    )
+
+    dedup_note = ""
+    if dedup_context:
+        dedup_note = (
+            f"\n\nAVOID repeating these recently-covered stories "
+            f"(only include if significantly updated this week):\n{dedup_context}"
+        )
+
+    system = (
+        f'You are an AI industry analyst. Your only task: research "{topic_area["name"]}" '
+        f"developments for the week of {week_range}.\n\n"
+        f"Run exactly these 2 web searches:\n{queries_formatted}\n\n"
+        f"After both searches, write a 300–500 word focused summary covering:\n"
+        f"- The 3–5 most significant developments\n"
+        f"- For each: what happened, why it matters, specific details "
+        f"(numbers, model names, benchmark scores, star counts)\n"
+        f"- Source attribution for every claim{dedup_note}\n\n"
+        f"Be specific and factual. No hype language."
+    )
 
     messages = [
-        {
-            "role": "user",
-            "content": f"Conduct a comprehensive AI weekly scan for the week of {week_range}. "
-                       f"Research all required topic areas with {MAX_SEARCHES} searches total, then write your summary.",
-        }
+        {"role": "user", "content": f"Research {topic_area['name']} for the week of {week_range}."}
     ]
 
-    all_text_blocks = []
+    all_text = []
     sources = []
     seen_urls = set()
-    search_count = 0
 
-    for turn in range(MAX_RESEARCH_TURNS):
-        response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=4000,
-            system=system_prompt,
-            tools=[WEB_SEARCH_TOOL],
-            messages=messages,
-        )
+    for _ in range(MAX_TOPIC_TURNS):
+        try:
+            response = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=2000,
+                system=system,
+                tools=[TOPIC_SEARCH_TOOL],
+                messages=messages,
+            )
+        except anthropic.APIError as e:
+            print(f"  WARNING: {topic_area['name']} API error: {e}", file=sys.stderr)
+            break
 
         for block in response.content:
             if hasattr(block, "type"):
                 if block.type == "text":
-                    all_text_blocks.append(block.text)
+                    all_text.append(block.text)
                 elif block.type == "server_tool_use":
-                    search_count += 1
-                    print(f"  Search {search_count}: {getattr(block, 'input', {}).get('query', '...')}")
+                    print(f"  [{topic_area['name']}] searching: {getattr(block, 'input', {}).get('query', '...')}")
                 elif block.type == "web_search_tool_result":
                     for result in getattr(block, "content", []):
                         if hasattr(result, "url") and result.url not in seen_urls:
                             seen_urls.add(result.url)
-                            sources.append(
-                                {
-                                    "url": result.url,
-                                    "title": getattr(result, "title", ""),
-                                    "publication": _extract_publication(result.url),
-                                }
-                            )
+                            sources.append({
+                                "url": result.url,
+                                "title": getattr(result, "title", ""),
+                                "publication": _extract_publication(result.url),
+                            })
 
         if response.stop_reason == "end_turn":
             break
 
-        if search_count >= MAX_SEARCHES:
-            print(f"  Search cap ({MAX_SEARCHES}) reached — stopping research loop")
-            break
-
         if response.stop_reason == "tool_use":
-            # Strip bulky search result payloads before appending to history
-            # to prevent context window overflow on long research sessions.
             messages.append({"role": "assistant", "content": _strip_tool_results(response.content)})
 
-    research_summary = "\n\n".join(all_text_blocks)
-    print(f"Research complete: {search_count} searches, {len(sources)} sources")
-    return research_summary, sources
+    return {
+        "name": topic_area["name"],
+        "section": topic_area["section"],
+        "summary": "\n\n".join(all_text),
+        "sources": sources,
+    }
 
 
-def _extract_publication(url):
-    """Extract a clean publication name from a URL."""
-    try:
-        from urllib.parse import urlparse
-        host = urlparse(url).netloc.lower()
-        host = host.replace("www.", "")
-        parts = host.split(".")
-        return parts[0].capitalize() if parts else host
-    except Exception:
-        return url
+def run_research(client, week_range, recent_coverage_text):
+    """Map-reduce: run all topic agents in parallel, combine into one research summary."""
+    print(f"Starting parallel research for: {week_range} ({len(TOPIC_AREAS)} topic agents)")
+
+    all_sources = []
+    seen_urls = set()
+    topic_results = {}
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(TOPIC_AREAS)) as executor:
+        future_to_topic = {
+            executor.submit(research_one_topic, client, topic, week_range, recent_coverage_text): topic
+            for topic in TOPIC_AREAS
+        }
+        for future in concurrent.futures.as_completed(future_to_topic):
+            topic = future_to_topic[future]
+            try:
+                result = future.result()
+                topic_results[result["section"]] = result
+                print(f"  ✓ {result['name']} ({len(result['sources'])} sources)")
+                for source in result["sources"]:
+                    if source["url"] not in seen_urls:
+                        seen_urls.add(source["url"])
+                        all_sources.append(source)
+            except Exception as e:
+                print(f"  ERROR: {topic['name']} failed: {e}", file=sys.stderr)
+
+    # Reassemble in section order
+    sections = []
+    for topic in TOPIC_AREAS:
+        result = topic_results.get(topic["section"])
+        if result and result["summary"].strip():
+            sections.append(f"## {result['name']}\n\n{result['summary']}")
+
+    research_summary = "\n\n---\n\n".join(sections)
+    print(f"Research complete: {len(all_sources)} sources across {len(topic_results)}/{len(TOPIC_AREAS)} topics")
+    return research_summary, all_sources
 
 
 def build_sources_block(sources):
-    """Format sources list for template injection."""
     lines = []
     for i, s in enumerate(sources, 1):
         pub = f" ({s['publication']})" if s.get("publication") else ""
@@ -199,7 +296,6 @@ def build_sources_block(sources):
 
 
 def build_recent_coverage_text(history):
-    """Format recent coverage history as a plain-text list for the system prompt."""
     if not history:
         return ""
     lines = []
@@ -211,7 +307,6 @@ def build_recent_coverage_text(history):
 
 
 def build_recent_coverage_html(history):
-    """Format recent coverage as a compact list for the HTML template."""
     if not history:
         return "(No prior coverage — first run)"
     lines = []
@@ -223,7 +318,6 @@ def build_recent_coverage_html(history):
 
 
 def generate_html(client, week_range, research_summary, sources, url, recent_coverage_html):
-    """Fill prompt template and call Claude to generate the HTML page."""
     prompt_path = os.path.join(os.path.dirname(__file__), "prompts", "ai_weekly_scan.md")
     with open(prompt_path, "r") as f:
         template = f.read()
@@ -231,8 +325,8 @@ def generate_html(client, week_range, research_summary, sources, url, recent_cov
     filled = (
         template
         .replace("{{WEEK_RANGE}}", week_range)
-        .replace("{{RESEARCH}}", research_summary[:8000])
-        .replace("{{SOURCES}}", build_sources_block(sources[:30]))
+        .replace("{{RESEARCH}}", research_summary[:12000])
+        .replace("{{SOURCES}}", build_sources_block(sources[:40]))
         .replace("{{URL}}", url)
         .replace("{{RECENT_COVERAGE}}", recent_coverage_html)
     )
@@ -245,7 +339,6 @@ def generate_html(client, week_range, research_summary, sources, url, recent_cov
     )
 
     html = response.content[0].text.strip()
-    # Strip markdown fences if present
     if html.startswith("```"):
         html = re.sub(r"^```[a-z]*\n?", "", html)
         html = re.sub(r"\n?```$", "", html)
@@ -253,16 +346,12 @@ def generate_html(client, week_range, research_summary, sources, url, recent_cov
 
 
 def extract_weekly_items(client, research_summary):
-    """Extract a flat list of this week's story headlines for history storage."""
-    prompt = f"""From this AI weekly scan research, list the 10–15 main stories as short plain-text headlines.
-One per line. No bullet characters, no numbering, no markdown. Just the headline.
-Example: "OpenAI releases o3-mini with 60% cost reduction"
-
-Research:
-{research_summary[:5000]}
-
-Return only the headlines, one per line."""
-
+    prompt = (
+        "From this AI weekly scan research, list the 10–15 main stories as short plain-text headlines.\n"
+        "One per line. No bullets, no numbering, no markdown.\n"
+        'Example: "OpenAI releases o3-mini with 60% cost reduction"\n\n'
+        f"Research:\n{research_summary[:5000]}\n\nReturn only the headlines, one per line."
+    )
     try:
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
@@ -270,15 +359,13 @@ Return only the headlines, one per line."""
             messages=[{"role": "user", "content": prompt}],
         )
         text = response.content[0].text.strip()
-        items = [line.strip() for line in text.splitlines() if line.strip()]
-        return items
+        return [line.strip() for line in text.splitlines() if line.strip()]
     except anthropic.APIError as e:
         print(f"WARNING: Could not extract weekly items for history: {e}", file=sys.stderr)
         return []
 
 
 def load_history(s3_client, bucket):
-    """Load weekly coverage history from S3. Returns list of week dicts."""
     try:
         obj = s3_client.get_object(Bucket=bucket, Key=HISTORY_S3_KEY)
         return json.loads(obj["Body"].read().decode("utf-8"))
@@ -289,7 +376,6 @@ def load_history(s3_client, bucket):
 
 
 def save_history(s3_client, bucket, history):
-    """Save updated history to S3."""
     s3_client.put_object(
         Bucket=bucket,
         Key=HISTORY_S3_KEY,
@@ -299,7 +385,6 @@ def save_history(s3_client, bucket, history):
 
 
 def upload_html(s3_client, bucket, s3_key, html, week_range):
-    """Upload HTML to S3 with correct headers."""
     s3_client.put_object(
         Bucket=bucket,
         Key=s3_key,
@@ -311,10 +396,7 @@ def upload_html(s3_client, bucket, s3_key, html, week_range):
 
 
 def make_slug(week_range):
-    """Generate a filename-safe slug from the week range."""
-    slug = week_range.lower()
-    slug = re.sub(r"[^a-z0-9]+", "-", slug)
-    slug = slug.strip("-")
+    slug = re.sub(r"[^a-z0-9]+", "-", week_range.lower()).strip("-")
     return slug[:60]
 
 
@@ -339,7 +421,7 @@ def main():
 
     os.makedirs("output", exist_ok=True)
 
-    # --- Load history ---
+    # Load history
     history = []
     s3_client = None
     if not args.dry_run:
@@ -353,29 +435,28 @@ def main():
     recent_coverage_text = build_recent_coverage_text(history)
     recent_coverage_html = build_recent_coverage_html(history)
 
-    # --- Research ---
+    # Research (parallel topic agents)
     research_summary, sources = run_research(client, week_range, recent_coverage_text)
 
-    # --- Compute paths ---
-    slug = make_slug(week_range)
+    # Compute paths
     filename = f"{monday.isoformat()}-ai-weekly-scan.html"
     s3_key = f"weekly/{filename}"
     url = f"{cloudfront_base.rstrip('/')}/weekly/{filename}" if cloudfront_base else f"file://output/{filename}"
 
-    # --- Generate HTML ---
+    # Generate HTML (research_summary is now 10x richer, no token truncation needed)
     html = generate_html(client, week_range, research_summary, sources, url, recent_coverage_html)
 
-    # --- Save locally ---
+    # Save locally
     output_path = os.path.join("output", filename)
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(html)
-    print(f"✓ HTML saved: {output_path}")
+    print(f"✓ HTML saved: {output_path} ({len(html):,} bytes)")
 
     if args.dry_run:
         print("Dry run complete. Skipping S3 upload and Telegram.")
         return
 
-    # --- Upload to S3 ---
+    # Upload to S3
     try:
         upload_html(s3_client, bucket, s3_key, html, week_range)
         print(f"✓ Uploaded to S3: s3://{bucket}/{s3_key}")
@@ -383,17 +464,17 @@ def main():
         print(f"ERROR: S3 upload failed: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # --- Update history ---
+    # Update history
     try:
         items = extract_weekly_items(client, research_summary)
         history.append({"week": week_range, "items": items})
-        history = history[-HISTORY_MAX_WEEKS:]  # keep rolling window
+        history = history[-HISTORY_MAX_WEEKS:]
         save_history(s3_client, bucket, history)
         print(f"✓ History updated ({len(items)} items saved)")
     except Exception as e:
         print(f"WARNING: Could not update history: {e}", file=sys.stderr)
 
-    # --- Send Telegram ---
+    # Send Telegram
     send_weekly_briefing(week_range, research_summary, sources, url)
 
 
