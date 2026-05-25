@@ -314,6 +314,103 @@ def validate_urls(sources):
     return valid
 
 
+REVIEW_SEARCH_TOOL = {
+    "type": "web_search_20250305",
+    "name": "web_search",
+    "max_uses": 6,
+}
+MAX_REVIEW_TURNS = 8
+
+REVIEW_SYSTEM_PROMPT = """You are a skeptical AI industry editor fact-checking a weekly digest before publication.
+
+Your job: read the research summary, identify specific verifiable claims, verify the most questionable ones, and return a cleaned version.
+
+WHAT TO CHECK (in priority order):
+1. GitHub repository URLs — does the org/repo actually exist at that path?
+2. Model names and version numbers — is "Claude Sonnet 4.6" a real model? Is "Gemini 3.5 Flash" real?
+3. Benchmark scores and star counts — are the specific numbers plausible and sourced?
+4. Company announcements — did this actually happen this week?
+
+HOW TO USE YOUR 6 SEARCHES:
+- Use them surgically on the most suspicious specifics
+- Example: search "github.com/TauricResearch/TradingAgents" to confirm a repo
+- Example: search "Gemini 3.5 Flash release 2026" to confirm a model exists
+- Do NOT use searches for broad research — only targeted verification
+
+RULES:
+- Remove any item whose specific claims you cannot confirm — do NOT soften to "reportedly" or "allegedly"
+- Never invent replacement content
+- If an entire section has no verifiable items, write one honest sentence noting the gap
+- Keep the same prose format organized by section (## Section Name)
+
+OUTPUT FORMAT:
+Return the cleaned research summary first, then end with:
+
+[EDITORIAL NOTES]
+- Removed: <item description> — <reason>
+- Kept with caveat: <item description> — <note>
+- Verified: <item description> — <confirmation>
+
+If nothing was removed, say so."""
+
+
+def review_research(client, research_summary, week_range):
+    """Editorial fact-check: verify specific claims, remove unconfirmable items, return cleaned summary."""
+    print("Reviewing research for accuracy...")
+
+    messages = [
+        {
+            "role": "user",
+            "content": (
+                f"Fact-check this AI weekly scan research for the week of {week_range}. "
+                f"Verify specific claims, remove anything you cannot confirm, "
+                f"and return the cleaned research followed by your editorial notes.\n\n"
+                f"{research_summary}"
+            ),
+        }
+    ]
+
+    all_text = []
+
+    for _ in range(MAX_REVIEW_TURNS):
+        try:
+            response = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=8000,
+                system=REVIEW_SYSTEM_PROMPT,
+                tools=[REVIEW_SEARCH_TOOL],
+                messages=messages,
+            )
+        except anthropic.APIError as e:
+            print(f"WARNING: Review agent error: {e} — proceeding with unreviewed research", file=sys.stderr)
+            return research_summary
+
+        for block in response.content:
+            if hasattr(block, "type") and block.type == "text":
+                all_text.append(block.text)
+            elif hasattr(block, "type") and block.type == "server_tool_use":
+                print(f"  [Review] verifying: {getattr(block, 'input', {}).get('query', '...')}")
+
+        if response.stop_reason == "end_turn":
+            break
+
+        if response.stop_reason == "tool_use":
+            messages.append({"role": "assistant", "content": _strip_tool_results(response.content)})
+
+    full_output = "\n\n".join(all_text)
+
+    # Split editorial notes from cleaned research
+    if "[EDITORIAL NOTES]" in full_output:
+        cleaned, notes = full_output.split("[EDITORIAL NOTES]", 1)
+        print(f"\n[EDITORIAL NOTES]{notes.rstrip()}\n")
+    else:
+        cleaned = full_output
+
+    cleaned = cleaned.strip()
+    print("Review complete.")
+    return cleaned
+
+
 def build_sources_block(sources):
     lines = []
     for i, s in enumerate(sources, 1):
@@ -472,6 +569,9 @@ def main():
     # Validate all source URLs — drop 4xx and unreachable links
     print("Validating source URLs...")
     sources = validate_urls(sources)
+
+    # Editorial review — verify specific claims, remove anything unconfirmable
+    research_summary = review_research(client, research_summary, week_range)
 
     # Compute paths
     filename = f"{monday.isoformat()}-ai-weekly-scan.html"
