@@ -342,6 +342,9 @@ def generate_html(client, week_range, research_summary, sources, url, recent_cov
     if html.startswith("```"):
         html = re.sub(r"^```[a-z]*\n?", "", html)
         html = re.sub(r"\n?```$", "", html)
+    # Convert non-ASCII to XML character references so the file is pure ASCII.
+    # Eliminates all charset/encoding ambiguity regardless of how S3 or CloudFront serves it.
+    html = html.encode("ascii", "xmlcharrefreplace").decode("ascii")
     return html
 
 
