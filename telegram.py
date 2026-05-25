@@ -97,6 +97,70 @@ def send_briefing(topic, research_summary, sources, url):
     print(f"✓ Telegram message sent for: {topic}")
 
 
+def extract_weekly_bullets(client, research_summary, sources):
+    """Extract 3 punchy bullets for the weekly Telegram message."""
+    sources_text = "\n".join(
+        f"- {s['title']} ({s['publication']}): {s['url']}"
+        for s in sources[:20]
+    )
+
+    prompt = f"""From this AI weekly scan research, extract exactly 3 bullets for a Telegram digest message.
+Rules:
+- Each bullet is one sentence, max 15 words
+- Cover different angles: one from model releases, one from risks/concerns, one wildcard (could be research, open source, community, or policy)
+- Bold the key noun using *asterisks* for Telegram Markdown
+- No source attribution needed in the bullets themselves
+
+Research:
+{research_summary[:4000]}
+
+Sources:
+{sources_text}
+
+Return exactly 3 bullets, one per line, each starting with •. No other text."""
+
+    try:
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=300,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return response.content[0].text.strip()
+    except anthropic.APIError as e:
+        print(f"ERROR: Claude bullet extraction failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def send_weekly_briefing(week_range, research_summary, sources, url):
+    """Send weekly AI scan digest via Telegram."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        print("ERROR: ANTHROPIC_API_KEY is not set", file=sys.stderr)
+        sys.exit(1)
+
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    if not bot_token:
+        print("ERROR: TELEGRAM_BOT_TOKEN is not set", file=sys.stderr)
+        sys.exit(1)
+
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    if not chat_id:
+        print("ERROR: TELEGRAM_CHAT_ID is not set", file=sys.stderr)
+        sys.exit(1)
+
+    client = anthropic.Anthropic(api_key=api_key)
+    bullets = extract_weekly_bullets(client, research_summary, sources)
+
+    message = f"""📡 *AI Weekly Scan: {week_range}*
+
+{bullets}
+
+[Read the full digest →]({url})"""
+
+    send_telegram(bot_token, chat_id, message)
+    print(f"✓ Weekly Telegram message sent for: {week_range}")
+
+
 if __name__ == "__main__":
     import argparse
 
