@@ -24,7 +24,7 @@ python generate_weekly.py
 ```
 
 ## Scheduled
-Runs every Monday at 9 AM UTC via GitHub Actions (`.github/workflows/ai-weekly-scan.yml`).
+Runs every Sunday at 9 AM UTC via GitHub Actions (`.github/workflows/ai-weekly-scan.yml`).
 Manual trigger: Actions tab → AI Weekly Scan → Run workflow.
 
 ## Environment Variables
